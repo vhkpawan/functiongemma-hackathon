@@ -1,0 +1,76 @@
+[1/30] Running: weather_sf (easy)... F1=1.00 | 449ms | cloud (fallback)
+[2/30] Running: alarm_10am (easy)... F1=1.00 | 356ms | cloud (fallback)
+[3/30] Running: message_alice (easy)... F1=1.00 | 318ms | cloud (fallback)
+[4/30] Running: weather_london (easy)... F1=1.00 | 294ms | cloud (fallback)
+[5/30] Running: alarm_6am (easy)... F1=1.00 | 299ms | cloud (fallback)
+[6/30] Running: play_bohemian (easy)... F1=1.00 | 327ms | cloud (fallback)
+[7/30] Running: timer_5min (easy)... F1=1.00 | 341ms | cloud (fallback)
+[8/30] Running: reminder_meeting (easy)... F1=1.00 | 344ms | cloud (fallback)
+[9/30] Running: search_bob (easy)... F1=1.00 | 447ms | cloud (fallback)
+[10/30] Running: weather_paris (easy)... F1=1.00 | 420ms | cloud (fallback)
+[11/30] Running: message_among_three (medium)... F1=1.00 | 391ms | cloud (fallback)
+[12/30] Running: weather_among_two (medium)... F1=1.00 | 341ms | cloud (fallback)
+[13/30] Running: alarm_among_three (medium)... F1=1.00 | 341ms | cloud (fallback)
+[14/30] Running: music_among_three (medium)... F1=1.00 | 324ms | cloud (fallback)
+[15/30] Running: reminder_among_four (medium)... F1=1.00 | 295ms | cloud (fallback)
+[16/30] Running: timer_among_three (medium)... F1=1.00 | 316ms | cloud (fallback)
+[17/30] Running: search_among_four (medium)... F1=1.00 | 658ms | cloud (fallback)
+[18/30] Running: weather_among_four (medium)... F1=1.00 | 370ms | cloud (fallback)
+[19/30] Running: message_among_four (medium)... F1=0.00 | 433ms | cloud (fallback)
+[20/30] Running: alarm_among_five (medium)... F1=1.00 | 539ms | cloud (fallback)
+[21/30] Running: message_and_weather (hard)... F1=1.00 | 315ms | cloud (fallback)
+[22/30] Running: alarm_and_weather (hard)... F1=1.00 | 410ms | cloud (fallback)
+[23/30] Running: timer_and_music (hard)... F1=1.00 | 415ms | cloud (fallback)
+[24/30] Running: reminder_and_message (hard)... F1=0.50 | 566ms | cloud (fallback)
+[25/30] Running: search_and_message (hard)... F1=1.00 | 336ms | cloud (fallback)
+[26/30] Running: alarm_and_reminder (hard)... F1=1.00 | 461ms | cloud (fallback)
+[27/30] Running: weather_and_music (hard)... F1=1.00 | 388ms | cloud (fallback)
+[28/30] Running: message_weather_alarm (hard)... F1=1.00 | 486ms | cloud (fallback)
+[29/30] Running: timer_music_reminder (hard)... F1=1.00 | 475ms | cloud (fallback)
+[30/30] Running: search_message_weather (hard)... F1=1.00 | 581ms | cloud (fallback)
+
+=== Benchmark Results ===
+
+   # | Difficulty | Name                         |  Time (ms) |    F1 | Source
+  ---+------------+------------------------------+------------+-------+---------------------
+   1 | easy       | weather_sf                   |     448.89 |  1.00 | cloud (fallback)
+   2 | easy       | alarm_10am                   |     355.81 |  1.00 | cloud (fallback)
+   3 | easy       | message_alice                |     318.26 |  1.00 | cloud (fallback)
+   4 | easy       | weather_london               |     293.92 |  1.00 | cloud (fallback)
+   5 | easy       | alarm_6am                    |     298.92 |  1.00 | cloud (fallback)
+   6 | easy       | play_bohemian                |     326.96 |  1.00 | cloud (fallback)
+   7 | easy       | timer_5min                   |     340.67 |  1.00 | cloud (fallback)
+   8 | easy       | reminder_meeting             |     343.97 |  1.00 | cloud (fallback)
+   9 | easy       | search_bob                   |     446.68 |  1.00 | cloud (fallback)
+  10 | easy       | weather_paris                |     419.98 |  1.00 | cloud (fallback)
+  11 | medium     | message_among_three          |     391.43 |  1.00 | cloud (fallback)
+  12 | medium     | weather_among_two            |     341.40 |  1.00 | cloud (fallback)
+  13 | medium     | alarm_among_three            |     341.21 |  1.00 | cloud (fallback)
+  14 | medium     | music_among_three            |     324.30 |  1.00 | cloud (fallback)
+  15 | medium     | reminder_among_four          |     294.82 |  1.00 | cloud (fallback)
+  16 | medium     | timer_among_three            |     316.00 |  1.00 | cloud (fallback)
+  17 | medium     | search_among_four            |     657.63 |  1.00 | cloud (fallback)
+  18 | medium     | weather_among_four           |     369.77 |  1.00 | cloud (fallback)
+  19 | medium     | message_among_four           |     433.15 |  0.00 | cloud (fallback)
+  20 | medium     | alarm_among_five             |     539.34 |  1.00 | cloud (fallback)
+  21 | hard       | message_and_weather          |     314.54 |  1.00 | cloud (fallback)
+  22 | hard       | alarm_and_weather            |     409.91 |  1.00 | cloud (fallback)
+  23 | hard       | timer_and_music              |     414.80 |  1.00 | cloud (fallback)
+  24 | hard       | reminder_and_message         |     566.17 |  0.50 | cloud (fallback)
+  25 | hard       | search_and_message           |     336.09 |  1.00 | cloud (fallback)
+  26 | hard       | alarm_and_reminder           |     460.55 |  1.00 | cloud (fallback)
+  27 | hard       | weather_and_music            |     387.93 |  1.00 | cloud (fallback)
+  28 | hard       | message_weather_alarm        |     485.63 |  1.00 | cloud (fallback)
+  29 | hard       | timer_music_reminder         |     474.53 |  1.00 | cloud (fallback)
+  30 | hard       | search_message_weather       |     581.31 |  1.00 | cloud (fallback)
+
+--- Summary ---
+  easy     avg F1=1.00  avg time=359.41ms  on-device=0/10 cloud=10/10
+  medium   avg F1=0.90  avg time=400.91ms  on-device=0/10 cloud=10/10
+  hard     avg F1=0.95  avg time=443.15ms  on-device=0/10 cloud=10/10
+  overall  avg F1=0.95  avg time=401.15ms  total time=12034.57ms
+           on-device=0/30 (0%)  cloud=30/30 (100%)
+
+==================================================
+  TOTAL SCORE: 59.3%
+==================================================

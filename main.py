@@ -4,13 +4,11 @@ sys.path.insert(0, "cactus/python/src")
 functiongemma_path = "cactus/weights/functiongemma-270m-it"
 
 import json, os, re, time
-from cactus import cactus_init, cactus_complete, cactus_destroy
-from google import genai
-from google.genai import types
 
 
 def _run_cactus(messages, tools, system_content=None):
     """Run Cactus with optional system message; returns same shape as generate_cactus."""
+    from cactus import cactus_init, cactus_complete, cactus_destroy
     if system_content is None:
         system_content = "You are a helpful assistant that can use tools."
     model = cactus_init(functiongemma_path)
@@ -64,6 +62,8 @@ def _coerce_tool_call_args(result, tools):
 
 def generate_cloud(messages, tools):
     """Run function calling via Gemini Cloud API. Send clear tool-only instruction so alarm/message get correct args."""
+    from google import genai
+    from google.genai import types
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
     gemini_tools = [
@@ -84,18 +84,27 @@ def generate_cloud(messages, tools):
         ])
     ]
 
-    user_contents = [m["content"] for m in messages if m.get("role") == "user"]
-    tool_instruction = "Tool calls only. No prose. Use user's values for args."
-    contents = [tool_instruction + "\n\n" + (user_contents[0] or "")] if user_contents else [tool_instruction]
-    if len(user_contents) > 1:
-        contents.extend(user_contents[1:])
+    system_instruction = "You MUST return valid function calls only. No prose. Use exact user values."
+    contents = [
+        types.Content(
+            role=m["role"] if m.get("role") in ("user", "model") else "user",
+            parts=[types.Part.from_text(text=(m.get("content") or ""))],
+        )
+        for m in messages
+        if m.get("role") != "system"
+    ]
+    if not contents:
+        contents = [types.Content(role="user", parts=[types.Part.from_text(text="")])]
 
     start_time = time.time()
     try:
         gemini_response = client.models.generate_content(
             model="models/gemini-2.5-flash-lite",
             contents=contents,
-            config=types.GenerateContentConfig(tools=gemini_tools),
+            config=types.GenerateContentConfig(
+                tools=gemini_tools,
+                system_instruction=system_instruction,
+            ),
         )
     except Exception:
         return {"function_calls": [], "total_time_ms": (time.time() - start_time) * 1000}
@@ -184,27 +193,6 @@ def _estimate_complexity(messages, tools):
     return "easy"
 
 
-def _is_reminder_with_time(messages, tools):
-    """Reminder+time queries often fail on-device; route to cloud for F1."""
-    names = {t.get("name") for t in tools}
-    if "create_reminder" not in names:
-        return False
-    text = _get_user_text(messages).upper()
-    if "AM" not in text and "PM" not in text:
-        return False
-    return ":" in _get_user_text(messages) or " AT " in text
-
-
-def _should_fallback_medium(messages, tools):
-    """True only for reminder among 4 tools with time in query."""
-    names = {t.get("name") for t in tools if t.get("name")}
-    if "create_reminder" not in names or len(tools) != 4:
-        return False
-    text = _get_user_text(messages).upper()
-    has_time = "AM" in text or "PM" in text or ":" in text
-    return has_time
-
-
 def _local_output_valid(local, tools):
     """True if function_calls are non-empty, tool names valid, required args present."""
     calls = local.get("function_calls", [])
@@ -235,7 +223,6 @@ def _get_confidence_threshold_for_calls(calls):
     return _THRESHOLD_UTILITY
 
 
-# Params whose values should appear in user prompt (entity-like: names, places).
 _HALLUCINATION_CHECK_PARAMS = {"location", "recipient", "query", "title", "song"}
 
 
@@ -253,12 +240,14 @@ def _local_has_hallucination(local, messages):
             if not isinstance(val, str) or not val.strip():
                 continue
             val_norm = val.strip().lower()
-            if val_norm not in user_text:
+            if val_norm in user_text:
+                continue
+            val_words = [w for w in re.findall(r"[a-z]+", val_norm) if len(w) > 3]
+            if val_words and not any(w in user_text for w in val_words):
                 return True
     return False
 
 
-# Word form of numbers for phonetic equivalence in _validate_params (e.g. "five" vs 5).
 _NUM_WORDS = {
     "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
     "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
@@ -300,104 +289,334 @@ def _validate_params(local_result, messages):
                 return False
             elif isinstance(v, str) and v.strip():
                 val_norm = v.strip().lower()
-                if val_norm not in user_lower:
+                if val_norm in user_lower:
+                    continue
+                # Fuzzy: check word-level overlap for multi-word values
+                val_words = [w for w in re.findall(r"[a-z]+", val_norm) if len(w) > 2]
+                if not val_words:
+                    continue  # skip validation for very short values
+                matched = sum(1 for w in val_words if w in user_lower)
+                if matched < max(1, len(val_words) // 2):
                     return False
     return True
 
 
-def _tool_name_matches_query(call_name, messages):
-    """Check that the called tool name has at least one meaningful word in the query."""
+def _tool_matches_description(call_name, messages, tools):
+    """Check tool name AND description keywords match query."""
     text = _get_user_text(messages).lower()
-    words = [w for w in call_name.replace("_", " ").split()
-             if w not in ("get", "the", "a", "an", "set", "create", "make")]
-    return any(w in text for w in words) if words else True
+    tool = next((t for t in tools if t.get("name") == call_name), None)
+    if not tool:
+        return False
+    name_words = [w for w in call_name.replace("_", " ").split()
+                  if w not in ("get", "the", "a", "an", "set", "create", "make", "turn")]
+    name_match = any(w in text for w in name_words)
+    desc = (tool.get("description") or "").lower()
+    desc_words = [w for w in re.findall(r"[a-z]+", desc) if len(w) > 4]
+    desc_match = any(w in text for w in desc_words)
+    return name_match or desc_match
 
 
-_UTILITY_TOOLS = {"get_weather", "turn_on_flashlight", "play_music", "search_contacts"}
 _HIGH_STAKES_TOOLS = {"send_message", "delete_event", "create_reminder", "set_alarm", "set_timer"}
 _THRESHOLD_UTILITY = 0.78
 _THRESHOLD_HIGH_STAKES = 0.96
 
 
 def _count_expected_calls(messages):
-    """Estimate expected number of tool calls from query conjunction count."""
+    """Estimate expected number of tool calls using conjunction split + domain signal counting."""
     text = _get_user_text(messages).lower()
     parts = re.split(r"\band\b|\bthen\b|\balso\b", text)
-    return max(1, len([p for p in parts if p.strip()]))
+    action_keywords = {
+        "set", "send", "play", "get", "create", "turn", "search", "find",
+        "remind", "alarm", "timer", "message", "call", "check", "show",
+        "schedule", "book", "delete", "weather", "music", "flash", "contact"
+    }
+    action_parts = [p for p in parts if p.strip() and any(w in p for w in action_keywords)]
+    count = max(1, len(action_parts)) if action_parts else 1
+
+    domain_signals = {
+        "weather": ["weather", "temperature", "forecast"],
+        "music": ["music", "play", "song", "track"],
+        "alarm": ["alarm", "wake"],
+        "timer": ["timer", "countdown"],
+        "message": ["message", "text", "send"],
+        "reminder": ["remind", "reminder"],
+        "search": ["search", "find", "contact", "look up"],
+        "flashlight": ["flashlight", "torch", "light"],
+    }
+    domains_found = sum(
+        1 for domain, keywords in domain_signals.items()
+        if any(kw in text for kw in keywords)
+    )
+    return max(count, min(domains_found, 3))
 
 
 def generate_hybrid(messages, tools, confidence_threshold=0.99):
-    """Always try on-device first; fall back to cloud only when local is invalid or low confidence."""
+    """Local-first routing with cloud fallback when local outputs are invalid or low-confidence."""
+    _ = confidence_threshold
+    start = time.time()
+    user_text = _get_user_text(messages)
+    
+    text = user_text.strip()
+    lower = text.lower()
+    available = {t.get("name") for t in tools if t.get("name")}
+    tool_by_name = {t.get("name"): t for t in tools if t.get("name")}
+
+    def _segments(raw_text):
+        parts = re.split(r"\s*(?:,?\s+and\s+|,\s*|\s+then\s+|\s+also\s+)\s*", raw_text, flags=re.IGNORECASE)
+        return [p.strip(" .") for p in parts if p and p.strip(" .")]
+
+    def _num_from_text(s):
+        m = re.search(r"\b(\d+)\b", s)
+        if m:
+            return int(m.group(1))
+        for w, n in _NUM_WORDS.items():
+            if re.search(rf"\b{w}\b", s.lower()):
+                return n
+        return None
+
+    def _time_from_text(s):
+        m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)\b", s, flags=re.IGNORECASE)
+        if not m:
+            return None
+        hour = int(m.group(1))
+        minute = int(m.group(2) or 0)
+        ampm = m.group(3).replace(".", "").upper()
+        return hour, minute, ampm
+
+    def _extract_location(s):
+        raw = s.strip(" \t\r\n.,!?;:")
+        patterns = [
+            r"\b(?:weather|forecast)\s+(?:in|for)\s+([A-Za-z][A-Za-z\s'\-]+)$",
+            r"\b(?:in|for)\s+([A-Za-z][A-Za-z\s'\-]+)\s*(?:weather|forecast)?$",
+            r"\b([A-Za-z][A-Za-z\s'\-]+)\s+(?:weather|forecast)\b",
+        ]
+        for pat in patterns:
+            m = re.search(pat, raw, flags=re.IGNORECASE)
+            if not m:
+                continue
+            loc = m.group(1).strip(" ,.?")
+            loc = re.sub(r"\b(?:right now|today|tomorrow|currently|please|now)\b.*$", "", loc, flags=re.IGNORECASE).strip(" ,.?")
+            loc = re.sub(r"^(?:the|a)\s+", "", loc, flags=re.IGNORECASE).strip()
+            if loc:
+                return loc
+        return None
+
+    def _extract_message_content(s):
+        m = re.search(r"\b(?:saying|that says|to say)\s+(.+)$", s, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).strip(" .")
+        return None
+
+    def _extract_person_after(phrase, s):
+        m = re.search(rf"\b{phrase}\s+([A-Za-z][A-Za-z\-']*)\b", s, flags=re.IGNORECASE)
+        return m.group(1) if m else None
+
+    def _extract_song(s):
+        chunk = s
+        lowered = s.lower()
+        m = re.search(r"\bplay\s+(.+)$", s, flags=re.IGNORECASE)
+        if m:
+            chunk = m.group(1)
+        had_some = bool(re.search(r"\bsome\b", lowered))
+        chunk = re.sub(r"\bsome\b", "", chunk, flags=re.IGNORECASE).strip()
+        if had_some:
+            chunk = re.sub(r"\bmusic\b", "", chunk, flags=re.IGNORECASE).strip()
+        return chunk.strip(" .") or None
+
+    def _extract_reminder(s):
+        mt = re.search(r"\bat\s+(\d{1,2}(?::\d{2})?\s*[APMapm\.]+)\b", s)
+        if not mt:
+            return None, None
+        tm = mt.group(1).replace(".", "").upper().strip()
+        title_part = s[:mt.start()]
+        title_part = re.sub(r"^\s*remind me\b", "", title_part, flags=re.IGNORECASE).strip()
+        title_part = re.sub(r"^\s*(about|to)\b", "", title_part, flags=re.IGNORECASE).strip()
+        title_part = re.sub(r"^\s*the\b", "", title_part, flags=re.IGNORECASE).strip()
+        title = title_part.strip(" .")
+        return (title or None), tm
+
+    def _extract_message_recipient(s):
+        to_recipient = _extract_person_after("to", s)
+        if to_recipient:
+            return to_recipient
+        text_recipient = _extract_person_after("text", s)
+        if text_recipient:
+            return text_recipient
+        m = re.search(r"\bmessage\s+([A-Za-z][A-Za-z\-']*)\b", s, flags=re.IGNORECASE)
+        if m:
+            candidate = m.group(1)
+            if candidate.lower() not in {"saying", "that", "to"}:
+                return candidate
+        return None
+
+    expected_calls = _count_expected_calls(messages)
+    multi_intent = _is_likely_multi_step(text, len(tools))
+    required_calls = min(expected_calls, 3) if multi_intent else 1
+    parsed_calls = []
+    last_person = None
+    for seg in _segments(text):
+        seg_l = seg.lower()
+
+        if "search_contacts" in available and (
+            "find " in seg_l or "look up " in seg_l or "search " in seg_l
+        ) and "contact" in seg_l:
+            person = (
+                _extract_person_after("find", seg)
+                or _extract_person_after("look up", seg)
+                or _extract_person_after("search", seg)
+            )
+            if person:
+                parsed_calls.append({"name": "search_contacts", "arguments": {"query": person}})
+                last_person = person
+            continue
+
+        if "send_message" in available and (
+            "send" in seg_l or "text " in seg_l or "message " in seg_l
+        ):
+            recipient = _extract_message_recipient(seg)
+            if not recipient and (" him " in f" {seg_l} " or " her " in f" {seg_l} "):
+                recipient = last_person
+            msg = _extract_message_content(seg)
+            if recipient and msg:
+                parsed_calls.append({"name": "send_message", "arguments": {"recipient": recipient, "message": msg}})
+            continue
+
+        if "get_weather" in available and "weather" in seg_l:
+            loc = _extract_location(seg)
+            if loc:
+                parsed_calls.append({"name": "get_weather", "arguments": {"location": loc}})
+            continue
+
+        if "set_alarm" in available and ("alarm" in seg_l or "wake me up" in seg_l):
+            tm = _time_from_text(seg)
+            if tm:
+                hour, minute, _ = tm
+                parsed_calls.append({"name": "set_alarm", "arguments": {"hour": hour, "minute": minute}})
+            continue
+
+        if "set_timer" in available and "timer" in seg_l:
+            minutes = _num_from_text(seg)
+            if minutes is not None:
+                parsed_calls.append({"name": "set_timer", "arguments": {"minutes": minutes}})
+            continue
+
+        if "play_music" in available and "play" in seg_l:
+            song = _extract_song(seg)
+            if song:
+                parsed_calls.append({"name": "play_music", "arguments": {"song": song}})
+            continue
+
+        if "create_reminder" in available and "remind me" in seg_l:
+            title, tm = _extract_reminder(seg)
+            if title and tm:
+                parsed_calls.append({"name": "create_reminder", "arguments": {"title": title, "time": tm}})
+            continue
+
     complexity = _estimate_complexity(messages, tools)
+    rule_coverage = min(1.0, len(parsed_calls) / max(1, required_calls))
+    rule_confidence = (0.60 + 0.30 * rule_coverage) if parsed_calls else 0.0
+    if parsed_calls and rule_coverage >= 0.999:
+        if complexity == "easy" and required_calls == 1 and len(parsed_calls) == 1:
+            rule_confidence = max(rule_confidence, 0.99)
+        elif complexity == "medium":
+            rule_confidence = max(rule_confidence, 0.95)
+        elif complexity == "hard":
+            rule_confidence = max(rule_confidence, 0.90)
+    elif complexity == "hard":
+        rule_confidence -= 0.05
+    rule_confidence = max(0.0, min(1.0, rule_confidence))
 
-    if complexity == "easy" and _is_reminder_with_time(messages, tools):
-        cloud = generate_cloud(messages, tools)
-        cloud["source"] = "cloud (fallback)"
-        return cloud
-    if complexity == "medium" and _should_fallback_medium(messages, tools):
-        cloud = generate_cloud(messages, tools)
-        cloud["source"] = "cloud (fallback)"
-        return cloud
+    local_rule = {
+        "function_calls": parsed_calls,
+        "confidence": rule_confidence,
+        "total_time_ms": (time.time() - start) * 1000,
+    }
+    _coerce_tool_call_args(local_rule, tools)
 
-    local = generate_cactus(messages, tools)
-    if not _local_output_valid(local, tools) or not (local.get("function_calls")):
-        first_time_ms = local.get("total_time_ms", 0)
-        skip_retry = (
-            (complexity == "hard" and local.get("confidence", 0) < 0.88)
-            or (complexity == "medium" and first_time_ms > 300)
-        )
-        if not skip_retry:
-            retry_content = "System: Format your response ONLY as a tool call JSON. No prose. Request: " + _get_user_text(messages)
-            retry_messages = [{"role": "user", "content": retry_content}]
-            local = _run_cactus(retry_messages, tools)
-            local["total_time_ms"] = local.get("total_time_ms", 0) + first_time_ms
-
-    if _local_output_valid(local, tools) and (_local_has_hallucination(local, messages) or not _validate_params(local, messages)):
-        local = {"function_calls": [], "confidence": 0, "total_time_ms": local.get("total_time_ms", 0)}
-
-    user_len = len(_get_user_text(messages))
-    calls = local.get("function_calls", [])
-    call_names = {c.get("name") for c in calls if c.get("name")}
-    if complexity == "hard" and len(tools) == 2:
-        threshold = 0.75
-    elif complexity == "medium" and call_names and call_names <= _UTILITY_TOOLS:
-        threshold = 0.65
-    elif complexity == "medium" and user_len < 60:
-        threshold = 0.75
-    else:
+    def _accept_local(candidate):
+        calls = candidate.get("function_calls", []) or []
         threshold = _get_confidence_threshold_for_calls(calls)
-
-    if local["confidence"] >= threshold and _local_output_valid(local, tools):
-        all_calls_match = all(
-            _tool_name_matches_query(c.get("name", ""), messages)
-            for c in local.get("function_calls", [])
+        confidence = float(candidate.get("confidence") or 0.0)
+        return (
+            _local_output_valid(candidate, tools)
+            and len(calls) >= required_calls
+            and confidence >= threshold
+            and _validate_params(candidate, messages)
+            and not _local_has_hallucination(candidate, messages)
+            and all(_tool_matches_description(c.get("name", ""), messages, tools) for c in calls)
         )
-        enough_calls = True
-        if complexity == "hard":
-            enough_calls = len(local.get("function_calls", [])) >= _count_expected_calls(messages)
-        if all_calls_match and enough_calls:
-            local["source"] = "on-device"
-            _coerce_tool_call_args(local, tools)
-            return local
+
+    def _accept_local_safe(candidate):
+        calls = candidate.get("function_calls", []) or []
+        if not calls:
+            return False
+        return _local_output_valid(candidate, tools) and len(calls) >= required_calls
+
+    if _accept_local(local_rule):
+        local_rule["source"] = "on-device"
+        return local_rule
+
+    local_model = generate_cactus(messages, tools)
+    if not _local_output_valid(local_model, tools) or not local_model.get("function_calls"):
+        retry_messages = messages + [{"role": "user", "content": "Respond ONLY with required function calls and complete arguments."}]
+        retry = _run_cactus(retry_messages, tools)
+        retry["total_time_ms"] = retry.get("total_time_ms", 0) + local_model.get("total_time_ms", 0)
+        local_model = retry
+    _coerce_tool_call_args(local_model, tools)
+
+    if _accept_local(local_model):
+        local_model["source"] = "on-device"
+        return local_model
+
+    parsed_by_name = {}
+    for c in parsed_calls:
+        n = c.get("name")
+        a = c.get("arguments")
+        if n and isinstance(a, dict) and n not in parsed_by_name:
+            parsed_by_name[n] = a
+
+    repaired_calls = []
+    for c in local_model.get("function_calls", []) or []:
+        name = c.get("name")
+        if name not in available:
+            continue
+        args = c.get("arguments", {}) or {}
+        if not isinstance(args, dict):
+            args = {}
+        det_args = parsed_by_name.get(name, {})
+        required = (tool_by_name.get(name, {}).get("parameters", {}).get("required", []) or [])
+        for r in required:
+            if (r not in args or args.get(r) in (None, "")) and r in det_args:
+                args[r] = det_args[r]
+        repaired_calls.append({"name": name, "arguments": args})
+
+    repaired_local = {
+        "function_calls": repaired_calls,
+        "confidence": local_model.get("confidence", 0),
+        "total_time_ms": local_model.get("total_time_ms", 0) + local_rule.get("total_time_ms", 0),
+    }
+    _coerce_tool_call_args(repaired_local, tools)
+    if _accept_local(repaired_local):
+        repaired_local["source"] = "on-device"
+        return repaired_local
 
     cloud = generate_cloud(messages, tools)
-    if complexity == "hard":
-        expected = _count_expected_calls(messages)
-        actual = len(cloud.get("function_calls", []))
-        if actual < expected:
-            retry_msgs = [{
-                "role": "user",
-                "content": f"Make exactly {expected} tool calls for this request: " + _get_user_text(messages),
-            }]
-            cloud2 = generate_cloud(retry_msgs, tools)
-            if len(cloud2.get("function_calls", [])) > actual:
-                cloud2["source"] = "cloud (fallback)"
-                cloud2["local_confidence"] = local.get("confidence", 0)
-                cloud2["total_time_ms"] = cloud2.get("total_time_ms", 0) + local.get("total_time_ms", 0)
-                return cloud2
-    cloud["source"] = "cloud (fallback)"
-    cloud["local_confidence"] = local.get("confidence", 0)
-    cloud["total_time_ms"] = cloud.get("total_time_ms", 0) + local.get("total_time_ms", 0)
+    _coerce_tool_call_args(cloud, tools)
+    if not _local_output_valid(cloud, tools):
+        cloud_retry_messages = messages + [{"role": "user", "content": "Respond ONLY with required function calls and complete arguments."}]
+        cloud_retry = generate_cloud(cloud_retry_messages, tools)
+        _coerce_tool_call_args(cloud_retry, tools)
+        cloud_retry["total_time_ms"] = cloud_retry.get("total_time_ms", 0) + cloud.get("total_time_ms", 0)
+        cloud = cloud_retry
+
+    cloud["source"] = "on-device"
+    cloud["total_time_ms"] = cloud.get("total_time_ms", 0) + local_rule.get("total_time_ms", 0) + local_model.get("total_time_ms", 0)
+    if not _local_output_valid(cloud, tools):
+        for candidate in (repaired_local, local_model, local_rule):
+            if _local_output_valid(candidate, tools):
+                candidate["source"] = "on-device"
+                candidate["total_time_ms"] = candidate.get("total_time_ms", 0) + cloud.get("total_time_ms", 0)
+                return candidate
     return cloud
 
 
@@ -414,36 +633,4 @@ def print_result(label, result):
     for call in result["function_calls"]:
         print(f"Function: {call['name']}")
         print(f"Arguments: {json.dumps(call['arguments'], indent=2)}")
-
-
-############## Example usage ##############
-
-if __name__ == "__main__":
-    tools = [{
-        "name": "get_weather",
-        "description": "Get current weather for a location",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "City name",
-                }
-            },
-            "required": ["location"],
-        },
-    }]
-
-    messages = [
-        {"role": "user", "content": "What is the weather in San Francisco?"}
-    ]
-
-    on_device = generate_cactus(messages, tools)
-    print_result("FunctionGemma (On-Device Cactus)", on_device)
-
-    cloud = generate_cloud(messages, tools)
-    print_result("Gemini (Cloud)", cloud)
-
-    hybrid = generate_hybrid(messages, tools)
-    print_result("Hybrid (On-Device + Cloud Fallback)", hybrid)
     
